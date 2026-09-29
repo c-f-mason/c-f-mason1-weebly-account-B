@@ -36,11 +36,14 @@ set more off
 *-------------------------------------------------------------------------------
 global GJ_datafile "/Users/chuckmason/Dropbox/Research/NeilWilmot_jumps/SREC/PJM_SREC_prices.dta"
 global GJ_var      SRECp_ret        // variable to analyse
-global GJ_scale    100              // oilp = GJ_scale * GJ_var  (GAUSS file: 100*rtn)
+global GJ_scale    1                // oilp = GJ_scale * GJ_var.  1 = raw returns (matches the coauthor's numbers);
+                                    // 100 = percent (the Stata preamble in the GAUSS file).  The MLE is scale-equivariant:
+                                    // mu, sigma, theta, del scale by GJ_scale, lambda does not.
 global GJ_maxopts  "difficult iterate(100) showtolerance"
 global GJ_K        10               // maximum number of jumps per period
 global GJ_multistart 1              // 1 = screen a grid of starts for Model 2 (GAUSS used one)
 global GJ_runjump    1              // 1 = also estimate Model 2
+global GJ_dropzero   0              // 1 = drop rows with an exact zero return (robustness check)
 
 * GAUSS start values.  Model 1: mu=5, sigma=14.  Model 2: Mu Sigma Lambda Theta Del
 global GJ_gbm_mu0  = 5.0
@@ -50,6 +53,7 @@ global GJ_sig0   = 2.50
 global GJ_lam0   = 0.10
 global GJ_theta0 = 0.20
 global GJ_del0   = 10.00
+global GJ_sc = ${GJ_scale}/100      // the start values above are in the GAUSS file's x100 units; rescaled by this factor
 
 *-------------------------------------------------------------------------------
 * Data (loaded directly, as in the GAUSS file's Stata preamble)
@@ -60,6 +64,8 @@ display as text " Single Jump processes"
 use "${GJ_datafile}", clear
 gen double oilp = ${GJ_scale}*${GJ_var}
 drop if oilp == .
+if "${GJ_dropzero}" == "1" drop if oilp == 0
+display as text "Observations used: " _N
 
 gen long t = _n
 tsset t
@@ -89,7 +95,7 @@ program define gj_gbm_lf
 end
 
 display as text _n "Model 1: Geometric Brownian Motion"
-matrix b1 = (${GJ_gbm_mu0}, ln(${GJ_gbm_sig0}))
+matrix b1 = (${GJ_gbm_mu0}*${GJ_sc}, ln(${GJ_gbm_sig0}*${GJ_sc}))
 ml model lf gj_gbm_lf (mu: oilp = ) /lnsigma, title("Geometric Brownian motion")
 ml init b1, copy
 ml maximize, difficult
@@ -168,7 +174,7 @@ end
 display as text _n "Model 2: (Multi) Mixed-jump diffusion process"
 
 * start vector on the unconstrained scale: mu, ln(sigma), logit(lambda), theta, ln(del)
-matrix b0 = (${GJ_mu0}, ln(${GJ_sig0}), logit(${GJ_lam0}), ${GJ_theta0}, ln(${GJ_del0}))
+matrix b0 = (${GJ_mu0}*${GJ_sc}, ln(${GJ_sig0}*${GJ_sc}), logit(${GJ_lam0}), ${GJ_theta0}*${GJ_sc}, ln(${GJ_del0}*${GJ_sc}))
 
 if "${GJ_multistart}" == "1" {
     * Mixture likelihoods are multimodal: screen a grid of starts, keep the best.
@@ -176,11 +182,11 @@ if "${GJ_multistart}" == "1" {
     foreach th in -20 -5 0.2 5 20 {
         foreach dl in 10 40 {
             foreach lm in 0.05 0.2 {
-                matrix b0 = (${GJ_mu0}, ln(${GJ_sig0}), logit(`lm'), `th', ln(`dl'))
+                matrix b0 = (${GJ_mu0}*${GJ_sc}, ln(${GJ_sig0}*${GJ_sc}), logit(`lm'), `th'*${GJ_sc}, ln(`dl'*${GJ_sc}))
                 gj_jfit "difficult iterate(60)" quiet
                 local ll = e(ll)
                 matrix bb = e(b)
-                display as text "start theta=`th' del=`dl' lambda=`lm':  ll = " %11.4f `ll'   ///
+                display as text "start (x100 units) theta=`th' del=`dl' lambda=`lm':  ll = " %11.4f `ll'   ///
                     "  sigma=" %8.3f exp(bb[1,2]) "  lambda=" %6.4f invlogit(bb[1,3])       ///
                     "  theta=" %8.3f bb[1,4] "  del=" %8.3f exp(bb[1,5]) "  rc=" gj_rc
                 if !missing(`ll') & `ll' > gj_best {
@@ -204,6 +210,8 @@ if gj_rc != 0 {
     display as error _n "WARNING: ml did not converge (rc = " gj_rc ").  Treat the results below with suspicion."
 }
 estimates store jump
+display as text _n "N = " e(N) ";  log likelihood = " %11.4f e(ll) "  (in the units of the data as scaled)"
+display as text "Log likelihood expressed in raw-return units (comparable across GJ_scale): " %11.4f e(ll) + e(N)*ln(${GJ_scale})
 
 *-------------------------------------------------------------------------------
 * Natural-scale estimates, bound check (GAUSS bounds), delta-method SEs
@@ -218,11 +226,11 @@ local glam = invlogit(bj[1,3])
 local gth  = bj[1,4]
 local gdel = exp(bj[1,5])
 display as text _n "Natural-scale estimates and bound check"
-display as text "  mu     = " %12.5f `gmu'  cond(abs(`gmu') >= 100, "   <-- outside GAUSS bound [-100,100]", "")
-display as text "  sigma  = " %12.5f `gsig' cond(`gsig' > 100, "   <-- outside GAUSS bound [0,100]", cond(`gsig' < 0.05, "   <-- collapsing toward 0: likely degenerate likelihood", ""))
+display as text "  mu     = " %12.5f `gmu'  cond(abs(`gmu'/${GJ_sc}) >= 100, "   <-- outside GAUSS bound [-100,100]", "")
+display as text "  sigma  = " %12.5f `gsig' cond(`gsig'/${GJ_sc} > 100, "   <-- outside GAUSS bound [0,100]", cond(`gsig'/${GJ_sc} < 0.05, "   <-- collapsing toward 0: likely degenerate likelihood", ""))
 display as text "  lambda = " %12.5f `glam' cond(`glam' < 1e-3, "   <-- at 0: theta and del are then not identified", cond(`glam' > 1-1e-3, "   <-- at upper bound 1", ""))
-display as text "  theta  = " %12.5f `gth'  cond(abs(`gth') >= 100, "   <-- outside GAUSS bound [-100,100]", "")
-display as text "  del    = " %12.5f `gdel' cond(`gdel' > 100, "   <-- outside GAUSS bound [0,100]", "")
+display as text "  theta  = " %12.5f `gth'  cond(abs(`gth'/${GJ_sc}) >= 100, "   <-- outside GAUSS bound [-100,100]", "")
+display as text "  del    = " %12.5f `gdel' cond(`gdel'/${GJ_sc} > 100, "   <-- outside GAUSS bound [0,100]", "")
 
 capture noisily nlcom (Mu: _b[mu:_cons]) (Sigma: exp(_b[/lnsigma]))       ///
     (Lambda: invlogit(_b[/lamlgt])) (Theta: _b[/theta]) (Del: exp(_b[/lndel]))
