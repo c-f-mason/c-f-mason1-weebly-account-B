@@ -42,6 +42,8 @@ set more off
 global GJ_solar   = 4          // 1 = SREC price returns, 2 = Henry Hub, 3 = PJM Wh,
                            // 4 = residuals from Chuck (May 2023)
 global GJ_datadir "."          // folder holding the .txt files (GAUSS: C:\gauss22\Neil\solar\)
+// options passed to ml maximize; diagnostics on.  Defaults: tolerance(1e-6) ltolerance(1e-7) nrtolerance(1e-5)
+global GJ_maxopts "difficult trace gradient showtolerance iterate(40)"
 global GJ_K   10           // maximum number of jumps per period in the Poisson sum
 
 * start values, GAUSS order: Mu | Kappa | Beta | Alpha | Lambda | Theta | Del
@@ -230,7 +232,7 @@ display as text _n "GARCH(1,1) with Jumps estimation"
 ml model gf0 gj_eval (mu: oilp = ) /lnkappa /apers /ashare /lamlgt /theta /lndel ///
     if t > 1, title("GARCH(1,1) with Poisson jumps")
 ml init b0, copy
-ml maximize, difficult
+ml maximize, ${GJ_maxopts}
 
 estimates store garchjump
 
