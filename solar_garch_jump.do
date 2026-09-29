@@ -34,6 +34,7 @@
 
 version 19
 clear all
+macro drop GJ_*          // start from clean settings; stale globals from an earlier run would otherwise persist
 set more off
 
 *-------------------------------------------------------------------------------
@@ -103,7 +104,7 @@ else {
 
 if _N != ${GJ_nexp} {
     display as error "warning: expected ${GJ_nexp} observations, found " _N
-    if ${GJ_truncate} == 1 & _N > ${GJ_nexp} {
+    if "${GJ_truncate}" == "1" & _N > ${GJ_nexp} {
         display as error "keeping the first ${GJ_nexp} rows (GAUSS load solmat[${GJ_nexp},k] ignores the rest)"
         keep in 1/${GJ_nexp}
     }
@@ -214,6 +215,15 @@ program define gj_eval
 end
 
 *-------------------------------------------------------------------------------
+* Guard against a partial run: if the settings block at the top was skipped,
+* fall back to defaults instead of expanding empty macros.
+*-------------------------------------------------------------------------------
+if "${GJ_K}" == ""      global GJ_K 10
+if "${GJ_Y}" == ""      global GJ_Y oilp
+if "${GJ_mu0}" == ""    display as error "GJ_* start values are not set: run the WHOLE do-file (do solar_garch_jump.do), not a selection"
+if "${GJ_mu0}" == ""    exit 198
+
+*-------------------------------------------------------------------------------
 * Helpers: start vector on the unconstrained scale, and one ml fit
 *-------------------------------------------------------------------------------
 capture program drop gj_startvec
@@ -266,7 +276,7 @@ if "${GJ_fixbeta}" == "1" constraint define 1 [ashare]_cons = -30
 * GAUSS start vector: Mu | Kappa | Beta | Alpha | Lambda | Theta | Del
 gj_startvec ${GJ_mu0} ${GJ_kappa0} ${GJ_beta0} ${GJ_alpha0} ${GJ_lam0} ${GJ_theta0} ${GJ_del0}
 
-if ${GJ_multistart} == 1 {
+if "${GJ_multistart}" == "1" {
     * Mixture likelihoods are multimodal: screen a grid of starts, keep the best.
     scalar gj_best = -1e300
     foreach th in -30 -5 0.5 5 30 {
