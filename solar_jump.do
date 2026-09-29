@@ -10,7 +10,8 @@
       sum truncated at K = 10 jumps per period.
 
   NOTE on the GAUSS file as saved: it executes Model 1 and then hits `stop;`
-  (line 102), so Model 2 is never run.  This translation runs both.
+  (line 102), so Model 2 is never run.  This translation has no `stop`: it runs both
+  (set GJ_runjump = 0 to skip Model 2).
 
   Model 1 has a closed-form MLE (sample mean; sd with divisor N), so it is a
   built-in test of the machinery: the ml estimates must match it.
@@ -70,9 +71,11 @@ quietly count if oilp == 0
 local nzero = r(N)
 display as text _n "Exact zero returns: `nzero' of " _N " (" %5.1f 100*`nzero'/_N "%)"
 if `nzero' > 0 {
-    display as error "WARNING: with exact zeros, the Model 2 likelihood is unbounded as sigma -> 0"
-    display as error "(mu = 0 puts the k=0 component's density at those points at 1/sigma -> infinity)."
-    display as error "If sigma collapses toward 0 in Model 2 below, that is this problem, not a solution."
+    display as text "Rows with an exact zero return (check: unchanged price, or a missing value coded as 0?):"
+    list t ${GJ_var} if oilp == 0, noobs
+    display as error "NOTE: in principle the Model 2 likelihood is unbounded as sigma -> 0 when any y equals mu exactly"
+    display as error "(the k=0 component's density there ~ 1/sigma).  With only a few zeros the spike is narrow (log divergence);"
+    display as error "watch the sigma column in the Model 2 screening table.  sigma collapsing toward 0 is this problem, not a solution."
 }
 
 *-------------------------------------------------------------------------------
