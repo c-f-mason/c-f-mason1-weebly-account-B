@@ -42,8 +42,11 @@ set more off
 global GJ_solar   = 4          // 1 = SREC price returns, 2 = Henry Hub, 3 = PJM Wh,
                            // 4 = residuals from Chuck (May 2023)
 global GJ_datadir "."          // folder holding the .txt files (GAUSS: C:\gauss22\Neil\solar\)
-// options passed to ml maximize; diagnostics on.  Defaults: tolerance(1e-6) ltolerance(1e-7) nrtolerance(1e-5)
-global GJ_maxopts "difficult trace gradient showtolerance iterate(40)"
+// options passed to ml maximize.  Defaults: tolerance(1e-6) ltolerance(1e-7) nrtolerance(1e-5)
+global GJ_maxopts "difficult iterate(100) showtolerance"
+global GJ_multistart 1         // 1 = screen a grid of start values first, then polish the best (GAUSS used one start)
+global GJ_fixbeta    0         // 1 = hold Beta at its lower bound (.0001) and estimate the other 6 parameters
+global GJ_truncate   1         // 1 = keep only the first GJ_nexp rows, as GAUSS's load solmat[n,k] does
 global GJ_K   10           // maximum number of jumps per period in the Poisson sum
 
 * start values, GAUSS order: Mu | Kappa | Beta | Alpha | Lambda | Theta | Del
@@ -66,7 +69,7 @@ if ${GJ_solar} == 1 {
     display as text "Start data for sample Early 08/01/2009 up to 11/30/2015"
     display as text "DAILY Data"
     infile cnt price using "${GJ_datadir}/solar.txt", clear
-    local nexp = 2099
+    global GJ_nexp = 2099
     gen double oilp = 1*price
 }
 else if ${GJ_solar} == 2 {
@@ -74,7 +77,7 @@ else if ${GJ_solar} == 2 {
     display as text "Start data for sample Early 07/31/2009 up to 11/30/2015"
     display as text "DAILY Data"
     infile cnt price rtn using "${GJ_datadir}/HH_prices.txt", clear
-    local nexp = 1599
+    global GJ_nexp = 1599
     gen double oilp = 100*rtn
 }
 else if ${GJ_solar} == 3 {
@@ -82,7 +85,7 @@ else if ${GJ_solar} == 3 {
     display as text "Start data for sample Early 07/31/2009 up to 11/30/2015"
     display as text "DAILY Data"
     infile cnt price rtn using "${GJ_datadir}/pjm_prices.txt", clear
-    local nexp = 1606
+    global GJ_nexp = 1606
     gen double oilp = 100*rtn
 }
 else if ${GJ_solar} == 4 {
@@ -90,7 +93,7 @@ else if ${GJ_solar} == 4 {
     display as text "Start data for sample Early 07/31/2009 up to 11/30/2015"
     display as text "DAILY Data"
     infile cnt resid using "${GJ_datadir}/udata.txt", clear
-    local nexp = 2099
+    global GJ_nexp = 2099
     gen double oilp = 10*resid
 }
 else {
@@ -100,6 +103,10 @@ else {
 
 if _N != ${GJ_nexp} {
     display as error "warning: expected ${GJ_nexp} observations, found " _N
+    if ${GJ_truncate} == 1 & _N > ${GJ_nexp} {
+        display as error "keeping the first ${GJ_nexp} rows (GAUSS load solmat[${GJ_nexp},k] ignores the rest)"
+        keep in 1/${GJ_nexp}
+    }
 }
 assert !missing(oilp)          // the recursion needs an unbroken series
 
@@ -207,19 +214,43 @@ program define gj_eval
 end
 
 *-------------------------------------------------------------------------------
-* Start values on the unconstrained scale
+* Helpers: start vector on the unconstrained scale, and one ml fit
 *-------------------------------------------------------------------------------
-global GJ_lb = 0.0001
-global GJ_ub = 0.99
-global GJ_s0 = ${GJ_beta0} + ${GJ_alpha0}
+capture program drop gj_startvec
+program define gj_startvec
+    version 19
+    args mu kappa beta alpha lam theta del
+    local lb = 0.0001
+    local ub = 0.99
+    local s0 = `beta' + `alpha'
+    matrix b0 = ( `mu', ln(`kappa'),                              ///
+                  logit((`s0' - 2*`lb')/(`ub' - 2*`lb')),         ///
+                  logit((`beta' - `lb')/(`s0' - 2*`lb')),         ///
+                  logit((`lam' - `lb')/(1 - `lb')),               ///
+                  `theta', ln(`del' - `lb') )
+    if "${GJ_fixbeta}" == "1" matrix b0[1,4] = -30    // invlogit(-30) = 9e-14: beta = .0001
+end
 
-matrix b0 = ( ${GJ_mu0},                                          ///
-              ln(${GJ_kappa0}),                                   ///
-              logit((${GJ_s0} - 2*${GJ_lb})/(${GJ_ub} - 2*${GJ_lb})),         ///
-              logit((${GJ_beta0} - ${GJ_lb})/(${GJ_s0} - 2*${GJ_lb})),        ///
-              logit((${GJ_lam0} - ${GJ_lb})/(1 - ${GJ_lb})),              ///
-              ${GJ_theta0},                                       ///
-              ln(${GJ_del0} - ${GJ_lb}) )
+* One ml fit from matrix b0.  ml maximize aborts the do-file (r(430)) when it
+* does not converge; capture so the script can carry on.  Sets scalar gj_rc.
+capture program drop gj_fit
+program define gj_fit
+    version 19
+    args maxopts quiet
+    local cons ""
+    if "${GJ_fixbeta}" == "1" local cons "constraints(1)"
+    ml model gf0 gj_eval (mu: oilp = ) /lnkappa /apers /ashare /lamlgt /theta /lndel ///
+        if t > 1, title("GARCH(1,1) with Poisson jumps") `cons'
+    ml init b0, copy
+    if "`quiet'" == "quiet" {
+        capture ml maximize, `maxopts' nolog
+        scalar gj_rc = _rc
+    }
+    else {
+        capture noisily ml maximize, `maxopts'
+        scalar gj_rc = _rc
+    }
+end
 
 *-------------------------------------------------------------------------------
 * Estimation.  GAUSS: CML, BHHH algorithm, step halving.  Stata's gf0 evaluator
@@ -229,10 +260,39 @@ matrix b0 = ( ${GJ_mu0},                                          ///
 *-------------------------------------------------------------------------------
 display as text _n "GARCH(1,1) with Jumps estimation"
 
-ml model gf0 gj_eval (mu: oilp = ) /lnkappa /apers /ashare /lamlgt /theta /lndel ///
-    if t > 1, title("GARCH(1,1) with Poisson jumps")
-ml init b0, copy
-ml maximize, ${GJ_maxopts}
+constraint drop _all
+if "${GJ_fixbeta}" == "1" constraint define 1 [ashare]_cons = -30
+
+* GAUSS start vector: Mu | Kappa | Beta | Alpha | Lambda | Theta | Del
+gj_startvec ${GJ_mu0} ${GJ_kappa0} ${GJ_beta0} ${GJ_alpha0} ${GJ_lam0} ${GJ_theta0} ${GJ_del0}
+
+if ${GJ_multistart} == 1 {
+    * Mixture likelihoods are multimodal: screen a grid of starts, keep the best.
+    scalar gj_best = -1e300
+    foreach th in -30 -5 0.5 5 30 {
+        foreach dl in 3.5 60 {
+            foreach bt in 0.05 0.6 {
+                local al = cond(`bt' > 0.3, 0.2, 0.3)
+                gj_startvec ${GJ_mu0} ${GJ_kappa0} `bt' `al' ${GJ_lam0} `th' `dl'
+                gj_fit "difficult iterate(60)" quiet
+                local ll = e(ll)
+                display as text "start theta=`th' del=`dl' beta=`bt':  ll = " %10.4f `ll' "  rc = " gj_rc
+                if !missing(`ll') & `ll' > gj_best {
+                    scalar gj_best = `ll'
+                    matrix bbest = e(b)
+                }
+            }
+        }
+    }
+    display as text _n "Best log likelihood from screening: " %10.4f gj_best
+    if gj_best > -1e299 matrix b0 = bbest       // else fall back to the GAUSS start vector
+}
+
+gj_fit "${GJ_maxopts}"
+if gj_rc != 0 {
+    display as error _n "WARNING: ml did not converge (rc = " gj_rc ").  Check the bound report below;"
+    display as error "if Beta sits at .0001, set GJ_fixbeta = 1 and rerun."
+}
 
 estimates store garchjump
 
