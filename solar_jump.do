@@ -44,6 +44,7 @@ global GJ_K        10               // maximum number of jumps per period
 global GJ_multistart 1              // 1 = screen a grid of starts for Model 2 (GAUSS used one)
 global GJ_runjump    1              // 1 = also estimate Model 2
 global GJ_dropzero   0              // 1 = drop rows with an exact zero return (robustness check)
+global GJ_keepfirst  0              // n>0 = keep only the first n rows, as GAUSS's load solmat[n,k] does (0 = keep all)
 
 * GAUSS start values.  Model 1: mu=5, sigma=14.  Model 2: Mu Sigma Lambda Theta Del
 global GJ_gbm_mu0  = 5.0
@@ -65,6 +66,7 @@ use "${GJ_datafile}", clear
 gen double oilp = ${GJ_scale}*${GJ_var}
 drop if oilp == .
 if "${GJ_dropzero}" == "1" drop if oilp == 0
+if ${GJ_keepfirst} > 0 keep in 1/${GJ_keepfirst}
 display as text "Observations used: " _N
 
 gen long t = _n
