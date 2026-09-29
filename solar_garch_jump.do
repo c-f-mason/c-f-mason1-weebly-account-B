@@ -46,7 +46,6 @@ global GJ_datadir "."          // folder holding the .txt files (GAUSS: C:\gauss
 // options passed to ml maximize.  Defaults: tolerance(1e-6) ltolerance(1e-7) nrtolerance(1e-5)
 global GJ_maxopts "difficult iterate(100) showtolerance"
 global GJ_multistart 1         // 1 = screen a grid of start values first, then polish the best (GAUSS used one start)
-global GJ_fixbeta    0         // 1 = hold Beta at its lower bound (.0001) and estimate the other 6 parameters
 global GJ_truncate   1         // 1 = keep only the first GJ_nexp rows, as GAUSS's load solmat[n,k] does
 global GJ_K   10           // maximum number of jumps per period in the Poisson sum
 
@@ -238,7 +237,6 @@ program define gj_startvec
                   logit((`beta' - `lb')/(`s0' - 2*`lb')),         ///
                   logit((`lam' - `lb')/(1 - `lb')),               ///
                   `theta', ln(`del' - `lb') )
-    if "${GJ_fixbeta}" == "1" matrix b0[1,4] = -30    // invlogit(-30) = 9e-14: beta = .0001
 end
 
 * One ml fit from matrix b0.  ml maximize aborts the do-file (r(430)) when it
@@ -247,10 +245,8 @@ capture program drop gj_fit
 program define gj_fit
     version 19
     args maxopts quiet
-    local cons ""
-    if "${GJ_fixbeta}" == "1" local cons "constraints(1)"
     ml model gf0 gj_eval (mu: oilp = ) /lnkappa /apers /ashare /lamlgt /theta /lndel ///
-        if t > 1, title("GARCH(1,1) with Poisson jumps") `cons'
+        if t > 1, title("GARCH(1,1) with Poisson jumps")
     ml init b0, copy
     if "`quiet'" == "quiet" {
         capture ml maximize, `maxopts' nolog
@@ -269,9 +265,6 @@ end
 * First observation is excluded (GAUSS weight = 0) but still seeds the recursion.
 *-------------------------------------------------------------------------------
 display as text _n "GARCH(1,1) with Jumps estimation"
-
-constraint drop _all
-if "${GJ_fixbeta}" == "1" constraint define 1 [ashare]_cons = -30
 
 * GAUSS start vector: Mu | Kappa | Beta | Alpha | Lambda | Theta | Del
 gj_startvec ${GJ_mu0} ${GJ_kappa0} ${GJ_beta0} ${GJ_alpha0} ${GJ_lam0} ${GJ_theta0} ${GJ_del0}
@@ -300,8 +293,8 @@ if "${GJ_multistart}" == "1" {
 
 gj_fit "${GJ_maxopts}"
 if gj_rc != 0 {
-    display as error _n "WARNING: ml did not converge (rc = " gj_rc ").  Check the bound report below;"
-    display as error "if Beta sits at .0001, set GJ_fixbeta = 1 and rerun."
+    display as error _n "WARNING: ml did not converge (rc = " gj_rc ").  Treat the results below with suspicion;"
+    display as error "the bound report at the end shows whether a constraint is active."
 }
 
 estimates store garchjump
@@ -312,16 +305,16 @@ estimates store garchjump
 *-------------------------------------------------------------------------------
 matrix braw = e(b)                       // raw (unconstrained) estimates, kept for the bound check
 
-local S "(2*0.0001 + (0.99 - 2*0.0001)*invlogit(_b[apers:_cons]))"
-local W "invlogit(_b[ashare:_cons])"
+local S "(2*0.0001 + (0.99 - 2*0.0001)*invlogit(_b[/apers]))"
+local W "invlogit(_b[/ashare])"
 
 nlcom (Mu:      _b[mu:_cons])                                            ///
-      (Kappa:   exp(_b[lnkappa:_cons]))                                  ///
+      (Kappa:   exp(_b[/lnkappa]))                                  ///
       (Beta:    0.0001 + (`S' - 2*0.0001)*`W')                           ///
       (Alpha:   0.0001 + (`S' - 2*0.0001)*(1 - `W'))                     ///
-      (Lambda:  0.0001 + (1 - 0.0001)*invlogit(_b[lamlgt:_cons]))        ///
-      (Theta:   _b[theta:_cons])                                         ///
-      (Del:     0.0001 + exp(_b[lndel:_cons]))                           ///
+      (Lambda:  0.0001 + (1 - 0.0001)*invlogit(_b[/lamlgt]))        ///
+      (Theta:   _b[/theta])                                         ///
+      (Del:     0.0001 + exp(_b[/lndel]))                           ///
       (Persist: `S'), post
 
 mata: gj_bound_report(st_matrix("braw"))
