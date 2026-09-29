@@ -220,7 +220,9 @@ matrix b0 = ( ${GJ_mu0},                                          ///
               ln(${GJ_del0} - ${GJ_lb}) )
 
 *-------------------------------------------------------------------------------
-* Estimation.  GAUSS: CML, BHHH algorithm, step halving.
+* Estimation.  GAUSS: CML, BHHH algorithm, step halving.  Stata's gf0 evaluator
+* rejects technique(), so ml's default Newton-Raphson (numerical derivatives) is
+* used, with 'difficult' to help in flat regions.  Same optimum, different path.
 * First observation is excluded (GAUSS weight = 0) but still seeds the recursion.
 *-------------------------------------------------------------------------------
 display as text _n "GARCH(1,1) with Jumps estimation"
@@ -228,7 +230,7 @@ display as text _n "GARCH(1,1) with Jumps estimation"
 ml model gf0 gj_eval (mu: oilp = ) /lnkappa /apers /ashare /lamlgt /theta /lndel ///
     if t > 1, title("GARCH(1,1) with Poisson jumps")
 ml init b0, copy
-ml maximize, technique(bhhh 30 bfgs 30) vce(oim) difficult
+ml maximize, difficult
 
 estimates store garchjump
 
