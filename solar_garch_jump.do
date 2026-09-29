@@ -40,13 +40,15 @@ set more off
 *-------------------------------------------------------------------------------
 * User settings
 *-------------------------------------------------------------------------------
-global GJ_solar   = 4          // 1 = SREC price returns, 2 = Henry Hub, 3 = PJM Wh,
-                           // 4 = residuals from Chuck (May 2023)
-global GJ_datadir "."          // folder holding the .txt files (GAUSS: C:\gauss22\Neil\solar\)
+* Data: loaded directly from your own file (replaces the GAUSS solar=1..4 switch and
+* the udata.txt / HH_prices.txt / pjm_prices.txt loaders).  SET THESE THREE.
+global GJ_datafile "/Users/chuckmason/Dropbox/Research/NeilWilmot_jumps/SREC/PJM_SREC_prices.dta"
+global GJ_var      SRECp_ret      // variable to analyse
+global GJ_scale    100            // oilp = GJ_scale * GJ_var.  GAUSS used 10*resid (solar=4), 100*rtn (2,3), 1*price (1)
+global GJ_sortvar  ""             // optional: date variable to sort by; the GARCH recursion needs time order
 // options passed to ml maximize.  Defaults: tolerance(1e-6) ltolerance(1e-7) nrtolerance(1e-5)
 global GJ_maxopts "difficult iterate(100) showtolerance"
 global GJ_multistart 1         // 1 = screen a grid of start values first, then polish the best (GAUSS used one start)
-global GJ_truncate   1         // 1 = keep only the first GJ_nexp rows, as GAUSS's load solmat[n,k] does
 global GJ_K   10           // maximum number of jumps per period in the Poisson sum
 
 * start values, GAUSS order: Mu | Kappa | Beta | Alpha | Lambda | Theta | Del
@@ -62,55 +64,14 @@ global GJ_del0 = 3.5
 * Data
 *-------------------------------------------------------------------------------
 display as text "Solar Jump paper estimation"
-display as text " Single Jump processes"
+display as text " GARCH(1,1) with Poisson jumps"
 
-if ${GJ_solar} == 1 {
-    display as text "Solar Price"
-    display as text "Start data for sample Early 08/01/2009 up to 11/30/2015"
-    display as text "DAILY Data"
-    infile cnt price using "${GJ_datadir}/solar.txt", clear
-    global GJ_nexp = 2099
-    gen double oilp = 1*price
-}
-else if ${GJ_solar} == 2 {
-    display as text "Henry Hub Price returns"
-    display as text "Start data for sample Early 07/31/2009 up to 11/30/2015"
-    display as text "DAILY Data"
-    infile cnt price rtn using "${GJ_datadir}/HH_prices.txt", clear
-    global GJ_nexp = 1599
-    gen double oilp = 100*rtn
-}
-else if ${GJ_solar} == 3 {
-    display as text "PJM Wh Electricity Prices"
-    display as text "Start data for sample Early 07/31/2009 up to 11/30/2015"
-    display as text "DAILY Data"
-    infile cnt price rtn using "${GJ_datadir}/pjm_prices.txt", clear
-    global GJ_nexp = 1606
-    gen double oilp = 100*rtn
-}
-else if ${GJ_solar} == 4 {
-    display as text "Residuals Data from Chuck -- May 2023"
-    display as text "Start data for sample Early 07/31/2009 up to 11/30/2015"
-    display as text "DAILY Data"
-    infile cnt resid using "${GJ_datadir}/udata.txt", clear
-    global GJ_nexp = 2099
-    gen double oilp = 10*resid
-}
-else {
-    display as error "PROBLEM WITH DATA"
-    exit 198
-}
+use "${GJ_datafile}", clear
+if "${GJ_sortvar}" != "" sort ${GJ_sortvar}
+gen double oilp = ${GJ_scale}*${GJ_var}
+drop if oilp == .              // the recursion needs an unbroken series
 
-if _N != ${GJ_nexp} {
-    display as error "warning: expected ${GJ_nexp} observations, found " _N
-    if "${GJ_truncate}" == "1" & _N > ${GJ_nexp} {
-        display as error "keeping the first ${GJ_nexp} rows (GAUSS load solmat[${GJ_nexp},k] ignores the rest)"
-        keep in 1/${GJ_nexp}
-    }
-}
-assert !missing(oilp)          // the recursion needs an unbroken series
-
-gen long t = _n                // file order is time order, as in GAUSS
+gen long t = _n                // row order is time order (check this!)
 tsset t
 
 summarize oilp, detail
@@ -308,7 +269,10 @@ matrix braw = e(b)                       // raw (unconstrained) estimates, kept 
 local S "(2*0.0001 + (0.99 - 2*0.0001)*invlogit(_b[/apers]))"
 local W "invlogit(_b[/ashare])"
 
-nlcom (Mu:      _b[mu:_cons])                                            ///
+local cn : colfullnames e(b)
+display as text "coefficient names: `cn'"
+
+capture noisily nlcom (Mu:      _b[mu:_cons])                                            ///
       (Kappa:   exp(_b[/lnkappa]))                                  ///
       (Beta:    0.0001 + (`S' - 2*0.0001)*`W')                           ///
       (Alpha:   0.0001 + (`S' - 2*0.0001)*(1 - `W'))                     ///
