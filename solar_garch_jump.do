@@ -39,19 +39,19 @@ set more off
 *-------------------------------------------------------------------------------
 * User settings
 *-------------------------------------------------------------------------------
-local solar   = 4          // 1 = SREC price returns, 2 = Henry Hub, 3 = PJM Wh,
+global GJ_solar   = 4          // 1 = SREC price returns, 2 = Henry Hub, 3 = PJM Wh,
                            // 4 = residuals from Chuck (May 2023)
-local datadir "."          // folder holding the .txt files (GAUSS: C:\gauss22\Neil\solar\)
+global GJ_datadir "."          // folder holding the .txt files (GAUSS: C:\gauss22\Neil\solar\)
 global GJ_K   10           // maximum number of jumps per period in the Poisson sum
 
 * start values, GAUSS order: Mu | Kappa | Beta | Alpha | Lambda | Theta | Del
-local mu0 = 0.10
-local kappa0 = 1.5
-local beta0 = 0.05
-local alpha0 = 0.3
-local lam0 = 0.3
-local theta0 = 0.50
-local del0 = 3.5
+global GJ_mu0 = 0.10
+global GJ_kappa0 = 1.5
+global GJ_beta0 = 0.05
+global GJ_alpha0 = 0.3
+global GJ_lam0 = 0.3
+global GJ_theta0 = 0.50
+global GJ_del0 = 3.5
 
 *-------------------------------------------------------------------------------
 * Data
@@ -59,35 +59,35 @@ local del0 = 3.5
 display as text "Solar Jump paper estimation"
 display as text " Single Jump processes"
 
-if `solar' == 1 {
+if ${GJ_solar} == 1 {
     display as text "Solar Price"
     display as text "Start data for sample Early 08/01/2009 up to 11/30/2015"
     display as text "DAILY Data"
-    infile cnt price using "`datadir'/solar.txt", clear
+    infile cnt price using "${GJ_datadir}/solar.txt", clear
     local nexp = 2099
     gen double oilp = 1*price
 }
-else if `solar' == 2 {
+else if ${GJ_solar} == 2 {
     display as text "Henry Hub Price returns"
     display as text "Start data for sample Early 07/31/2009 up to 11/30/2015"
     display as text "DAILY Data"
-    infile cnt price rtn using "`datadir'/HH_prices.txt", clear
+    infile cnt price rtn using "${GJ_datadir}/HH_prices.txt", clear
     local nexp = 1599
     gen double oilp = 100*rtn
 }
-else if `solar' == 3 {
+else if ${GJ_solar} == 3 {
     display as text "PJM Wh Electricity Prices"
     display as text "Start data for sample Early 07/31/2009 up to 11/30/2015"
     display as text "DAILY Data"
-    infile cnt price rtn using "`datadir'/pjm_prices.txt", clear
+    infile cnt price rtn using "${GJ_datadir}/pjm_prices.txt", clear
     local nexp = 1606
     gen double oilp = 100*rtn
 }
-else if `solar' == 4 {
+else if ${GJ_solar} == 4 {
     display as text "Residuals Data from Chuck -- May 2023"
     display as text "Start data for sample Early 07/31/2009 up to 11/30/2015"
     display as text "DAILY Data"
-    infile cnt resid using "`datadir'/udata.txt", clear
+    infile cnt resid using "${GJ_datadir}/udata.txt", clear
     local nexp = 2099
     gen double oilp = 10*resid
 }
@@ -96,8 +96,8 @@ else {
     exit 198
 }
 
-if _N != `nexp' {
-    display as error "warning: expected `nexp' observations, found " _N
+if _N != ${GJ_nexp} {
+    display as error "warning: expected ${GJ_nexp} observations, found " _N
 }
 assert !missing(oilp)          // the recursion needs an unbroken series
 
@@ -207,17 +207,17 @@ end
 *-------------------------------------------------------------------------------
 * Start values on the unconstrained scale
 *-------------------------------------------------------------------------------
-local lb = 0.0001
-local ub = 0.99
-local s0 = `beta0' + `alpha0'
+global GJ_lb = 0.0001
+global GJ_ub = 0.99
+global GJ_s0 = ${GJ_beta0} + ${GJ_alpha0}
 
-matrix b0 = ( `mu0',                                          ///
-              ln(`kappa0'),                                   ///
-              logit((`s0' - 2*`lb')/(`ub' - 2*`lb')),         ///
-              logit((`beta0' - `lb')/(`s0' - 2*`lb')),        ///
-              logit((`lam0' - `lb')/(1 - `lb')),              ///
-              `theta0',                                       ///
-              ln(`del0' - `lb') )
+matrix b0 = ( ${GJ_mu0},                                          ///
+              ln(${GJ_kappa0}),                                   ///
+              logit((${GJ_s0} - 2*${GJ_lb})/(${GJ_ub} - 2*${GJ_lb})),         ///
+              logit((${GJ_beta0} - ${GJ_lb})/(${GJ_s0} - 2*${GJ_lb})),        ///
+              logit((${GJ_lam0} - ${GJ_lb})/(1 - ${GJ_lb})),              ///
+              ${GJ_theta0},                                       ///
+              ln(${GJ_del0} - ${GJ_lb}) )
 
 *-------------------------------------------------------------------------------
 * Estimation.  GAUSS: CML, BHHH algorithm, step halving.
