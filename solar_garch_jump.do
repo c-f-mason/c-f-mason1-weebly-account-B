@@ -382,7 +382,8 @@ if "${GJ_selfcheck}" == "1" {
         }
         generate double _chk_d = 0
         forvalues k = 0/$GJ_K {
-            replace _chk_d = _chk_d + (`clam'^`k'/factorial(`k')) * (_chk_h + `k'*`cdel'^2)^(-0.5) ///
+            local fk = exp(lnfactorial(`k'))        // k!  (Stata has no factorial() function)
+            replace _chk_d = _chk_d + (`clam'^`k'/`fk') * (_chk_h + `k'*`cdel'^2)^(-0.5) ///
                 * exp(-0.5*(oilp - `cmu' - `k'*`cth')^2/(_chk_h + `k'*`cdel'^2))
         }
         generate double _chk_ll = -`clam' - 0.5*ln(2*_pi) + ln(_chk_d)
