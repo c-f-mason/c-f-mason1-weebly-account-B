@@ -373,6 +373,7 @@ if "${GJ_selfcheck}" == "1" {
     local cth  = bnat[1,6]
     local cdel = bnat[1,7]
 
+    * (a) plain-Stata recursion and direct (non-log) mixture formula
     quietly {
         generate double _chk_u2 = (oilp - `cmu')^2
         summarize _chk_u2
@@ -390,9 +391,56 @@ if "${GJ_selfcheck}" == "1" {
         summarize _chk_ll if t > 1
     }
     local llchk = r(sum)
-    display as text _n "Self-check: Mata/ml log likelihood = " %14.6f ll_jump "   plain-Stata loop = " %14.6f `llchk'
-    if abs(ll_jump - `llchk') > 1e-6*max(1, abs(ll_jump)) {
-        display as error "SELF-CHECK FAILED: the Mata likelihood and the plain-Stata recomputation disagree."
+    local nchk  = r(N)
+
+    * (b) the Mata likelihood called directly at the same raw estimates
+    tempname q1 q2 q3 q4 q5 q6 q7
+    forvalues i = 1/7 {
+        scalar `q`i'' = braw[1,`i']
+    }
+    quietly {
+        generate double _chk_lm = .
+        mata: gj_ll("_chk_lm", "oilp", ("`q1'","`q2'","`q3'","`q4'","`q5'","`q6'","`q7'"), $GJ_K)
+        summarize _chk_lm if t > 1
+    }
+    local llm  = r(sum)
+    local nllm = r(N)
+
+    display as text _n "Self-check, three numbers that should agree:"
+    display as text "  ml e(ll)                          = " %14.6f ll_jump "   (N = " n_jump ")"
+    display as text "  Mata gj_ll summed over t>1        = " %14.6f `llm'  "   (N = `nllm')"
+    display as text "  plain-Stata loop summed over t>1  = " %14.6f `llchk' "   (N = `nchk')"
+
+    quietly {
+        generate double _chk_dif = _chk_lm - _chk_ll
+        count if missing(_chk_ll) & t > 1
+        local nmiss = r(N)
+        summarize _chk_dif if t > 1
+        local dmean = r(mean)
+        local dmin  = r(min)
+        local dmax  = r(max)
+        summarize t if abs(_chk_dif) > 1e-8 & t > 1
+        local ndif = r(N)
+        local tfirst = r(min)
+        local tlast  = r(max)
+    }
+    display as text "  rows where the plain loop is missing: `nmiss'"
+    display as text "  per-observation Mata minus loop: mean " %12.8f `dmean' "  min " %12.8f `dmin' "  max " %12.8f `dmax'
+    display as text "  rows differing by more than 1e-8: `ndif'" cond(`ndif' > 0, " (first at t = `tfirst', last at t = `tlast')", "")
+    if `ndif' > 0 {
+        display as text "  the ten largest differences:"
+        gsort -_chk_dif
+        list t oilp _chk_lm _chk_ll _chk_dif in 1/5, noobs
+        gsort _chk_dif
+        list t oilp _chk_lm _chk_ll _chk_dif in 1/5, noobs
+        sort t
+    }
+
+    if abs(ll_jump - `llm') > 1e-6*max(1, abs(ll_jump)) {
+        display as error "ml's e(ll) differs from the sum of the Mata likelihood: an ml sample/weighting issue, not a formula issue."
+    }
+    if abs(`llm' - `llchk') > 1e-6*max(1, abs(`llm')) {
+        display as error "SELF-CHECK FAILED: Mata likelihood and plain-Stata recomputation disagree (see the row pattern above)."
     }
     else display as text "Self-check passed."
     drop _chk_*
