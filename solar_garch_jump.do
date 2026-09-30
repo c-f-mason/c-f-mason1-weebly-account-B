@@ -16,6 +16,29 @@
   Bernoulli version), proc grd (analytic GARCH gradient, its use is commented
   out), _dshape, and the unused h0..h10 recursions inside garchmj.
 
+  Lessons carried over from validating the no-GARCH jump program (solar_jump.do)
+  against the coauthor's output:
+   * SCALE.  Estimates are scale-equivariant: if the data are multiplied by c,
+     mu, theta, del scale by c, kappa by c^2, and beta, alpha, lambda do not
+     move.  GJ_scale sets the data units; start values and the screening grid
+     are written in GJ_startscale units and rescaled automatically.  Compare
+     with the coauthor only after converting units.  The log likelihood shifts
+     by N*ln(c); the script prints it in raw-return units.
+   * SAMPLE.  Sample mismatches (2101 vs 2099 rows) were the main obstacle.
+     GJ_dropzero, GJ_droptails, GJ_keepfirst reproduce the ways a sample can
+     differ (see settings).  Note for GARCH: deleting rows from the middle of
+     the series (dropzero) makes non-adjacent days adjacent in the recursion.
+   * ZEROS.  Exact zeros are listed.  Unlike the constant-variance model,
+     kappa>0 keeps h_t away from 0 here, so the sigma->0 spike is much weaker,
+     but watch kappa in the screening table.
+   * MULTIMODALITY.  Single-start runs stalled at poor optima (-9583, -9589
+     vs -9470.78 after screening).  Screening is on by default.
+   * BENCHMARK.  Plain GARCH(1,1) via Stata's arch is fitted first; the jump
+     model nests it (lambda -> 0), so its log likelihood must not be lower.
+   * SELF-CHECK.  There is no GAUSS GARCH output to compare against, so the
+     Mata likelihood is re-computed at the estimates with a plain Stata loop
+     and the two are compared.
+
   Differences from GAUSS/CML you should know about
    * CML enforces bounds and beta+alpha<=.99 directly.  Stata's ml cannot, so
      the constraints are imposed by smooth reparameterisation (see gj_natural()
@@ -28,8 +51,12 @@
      factor of about sqrt((N-1)/N).
    * The Poisson mixture is summed in logs (log-sum-exp) for numerical
      stability.  Mathematically the same as the GAUSS expression.
-   * Untested against GAUSS output: compare log likelihood and estimates
-     before relying on it.
+   * Not yet compared with GAUSS GARCH output.  Obtain the coauthor's Model
+     estimates, convert units, and match the sample (Model 1 of solar_jump.do
+     fingerprints a sample) before relying on it.
+
+  Open modelling question (unchanged): h_t is driven by the RAW squared residual
+  (y-mu)^2, so a jump day feeds into next-period variance at full size.
 ==============================================================================*/
 
 version 19
@@ -40,18 +67,27 @@ set more off
 *-------------------------------------------------------------------------------
 * User settings
 *-------------------------------------------------------------------------------
-* Data: loaded directly from your own file (replaces the GAUSS solar=1..4 switch and
-* the udata.txt / HH_prices.txt / pjm_prices.txt loaders).  SET THESE THREE.
 global GJ_datafile "/Users/chuckmason/Dropbox/Research/NeilWilmot_jumps/SREC/PJM_SREC_prices.dta"
 global GJ_var      SRECp_ret      // variable to analyse
-global GJ_scale    100            // oilp = GJ_scale * GJ_var.  GAUSS used 10*resid (solar=4), 100*rtn (2,3), 1*price (1)
+global GJ_scale    1              // oilp = GJ_scale * GJ_var.  1 = raw (matches the jump-only coauthor output), 100 = percent
+global GJ_startscale 100          // data units in which the start values / screening grid below are written (GAUSS: 10 for
+                                  //   solar=4 residuals; the screening grid was tuned at 100)
 global GJ_sortvar  ""             // optional: date variable to sort by; the GARCH recursion needs time order
+
+* sample switches, applied in this order
+global GJ_droptails  0            // 1 = drop first and last USABLE observations (after missing returns are removed)
+                                  // 2 = drop first and last ROWS of the file (before missing returns are removed)
+global GJ_dropzero   0            // 1 = drop rows with an exact zero return
+global GJ_keepfirst  0            // n>0 = keep only the first n rows, as GAUSS's load solmat[n,k] does
+
 // options passed to ml maximize.  Defaults: tolerance(1e-6) ltolerance(1e-7) nrtolerance(1e-5)
 global GJ_maxopts "difficult iterate(100) showtolerance"
 global GJ_multistart 1         // 1 = screen a grid of start values first, then polish the best (GAUSS used one start)
-global GJ_K   10           // maximum number of jumps per period in the Poisson sum
+global GJ_benchmark  1         // 1 = also fit plain GARCH(1,1) with -arch- and compare
+global GJ_selfcheck  1         // 1 = recompute the log likelihood with a plain Stata loop and compare
+global GJ_K   10               // maximum number of jumps per period in the Poisson sum
 
-* start values, GAUSS order: Mu | Kappa | Beta | Alpha | Lambda | Theta | Del
+* start values, GAUSS order: Mu | Kappa | Beta | Alpha | Lambda | Theta | Del   (in GJ_startscale units)
 global GJ_mu0 = 0.10
 global GJ_kappa0 = 1.5
 global GJ_beta0 = 0.05
@@ -61,7 +97,7 @@ global GJ_theta0 = 0.50
 global GJ_del0 = 3.5
 
 *-------------------------------------------------------------------------------
-* Data
+* Data (loaded directly)
 *-------------------------------------------------------------------------------
 display as text "Solar Jump paper estimation"
 display as text " GARCH(1,1) with Poisson jumps"
@@ -69,14 +105,34 @@ display as text " GARCH(1,1) with Poisson jumps"
 use "${GJ_datafile}", clear
 if "${GJ_sortvar}" != "" sort ${GJ_sortvar}
 gen double oilp = ${GJ_scale}*${GJ_var}
+if "${GJ_droptails}" == "2" {
+    drop in 1
+    drop in l
+}
 drop if oilp == .              // the recursion needs an unbroken series
+if "${GJ_droptails}" == "1" {
+    drop in 1
+    drop in l
+}
+if "${GJ_dropzero}" == "1" drop if oilp == 0
+if ${GJ_keepfirst} > 0 keep in 1/${GJ_keepfirst}
+display as text "Observations used: " _N
 
 gen long t = _n                // row order is time order (check this!)
 tsset t
 
 summarize oilp, detail
 
+quietly count if oilp == 0
+local nzero = r(N)
+display as text _n "Exact zero returns: `nzero' of " _N
+if `nzero' > 0 {
+    display as text "Rows with an exact zero return (unchanged price, or a missing value coded as 0?):"
+    list t ${GJ_var} if oilp == 0, noobs
+}
+
 global GJ_Y oilp
+global GJ_sc = ${GJ_scale}/${GJ_startscale}     // start values are multiplied by this (kappa by its square)
 
 *-------------------------------------------------------------------------------
 * Mata: parameter transformation and log-likelihood
@@ -143,7 +199,7 @@ void gj_bound_report(real rowvector r)
     real scalar    tol
     b   = gj_natural(r)
     tol = 0.001
-    printf("\n{txt}Natural-scale estimates and bound check\n")
+    printf("\n{txt}Natural-scale estimates and bound check (data units as scaled)\n")
     printf("  mu     = %12.6f\n", b[1])
     printf("  kappa  = %12.6f\n", b[2])
     printf("  beta   = %12.6f%s\n", b[3], (b[3] < 0.0001 + tol ? "   <-- at lower bound" : ""))
@@ -155,7 +211,7 @@ void gj_bound_report(real rowvector r)
     printf("  beta+alpha = %9.6f%s\n", b[3] + b[4], (b[3] + b[4] > 0.99 - tol ? "   <-- at .99 cap" : ""))
     if (b[3] < 0.0001 + tol | b[4] < 0.0001 + tol | b[3] + b[4] > 0.99 - tol |
         b[5] < 0.0001 + tol | b[5] > 1 - tol | b[7] < 0.0001 + tol) {
-        printf("{err}  A bound is active: the Hessian-based SEs above are not valid.\n")
+        printf("{err}  A bound is active: the Hessian-based SEs are not valid.\n")
     }
 }
 end
@@ -176,7 +232,7 @@ end
 
 *-------------------------------------------------------------------------------
 * Guard against a partial run: if the settings block at the top was skipped,
-* fall back to defaults instead of expanding empty macros.
+* stop with a message instead of expanding empty macros.
 *-------------------------------------------------------------------------------
 if "${GJ_K}" == ""      global GJ_K 10
 if "${GJ_Y}" == ""      global GJ_Y oilp
@@ -186,6 +242,7 @@ if "${GJ_mu0}" == ""    exit 198
 *-------------------------------------------------------------------------------
 * Helpers: start vector on the unconstrained scale, and one ml fit
 *-------------------------------------------------------------------------------
+* Arguments are in GJ_startscale units; they are converted to the data's units here.
 capture program drop gj_startvec
 program define gj_startvec
     version 19
@@ -193,11 +250,12 @@ program define gj_startvec
     local lb = 0.0001
     local ub = 0.99
     local s0 = `beta' + `alpha'
-    matrix b0 = ( `mu', ln(`kappa'),                              ///
+    local sc = ${GJ_sc}
+    matrix b0 = ( `mu'*`sc', ln(`kappa'*`sc'^2),                  ///
                   logit((`s0' - 2*`lb')/(`ub' - 2*`lb')),         ///
                   logit((`beta' - `lb')/(`s0' - 2*`lb')),         ///
                   logit((`lam' - `lb')/(1 - `lb')),               ///
-                  `theta', ln(`del' - `lb') )
+                  `theta'*`sc', ln(`del'*`sc' - `lb') )
 end
 
 * One ml fit from matrix b0.  ml maximize aborts the do-file (r(430)) when it
@@ -220,6 +278,22 @@ program define gj_fit
 end
 
 *-------------------------------------------------------------------------------
+* Benchmark: plain Gaussian GARCH(1,1) with Stata's arch.  The jump model nests
+* it (lambda -> 0), so the jump log likelihood should not be lower.  arch
+* initialises the variance differently from the GAUSS recursion, so expect
+* small differences, not identity.
+*-------------------------------------------------------------------------------
+scalar ll_arch = .
+if "${GJ_benchmark}" == "1" {
+    display as text _n "Benchmark: Gaussian GARCH(1,1) via arch (no jumps)"
+    capture noisily arch oilp if t > 1, arch(1) garch(1) nolog
+    if _rc == 0 {
+        scalar ll_arch = e(ll)
+        estimates store benchmark
+    }
+}
+
+*-------------------------------------------------------------------------------
 * Estimation.  GAUSS: CML, BHHH algorithm, step halving.  Stata's gf0 evaluator
 * rejects technique(), so ml's default Newton-Raphson (numerical derivatives) is
 * used, with 'difficult' to help in flat regions.  Same optimum, different path.
@@ -233,6 +307,7 @@ gj_startvec ${GJ_mu0} ${GJ_kappa0} ${GJ_beta0} ${GJ_alpha0} ${GJ_lam0} ${GJ_thet
 if "${GJ_multistart}" == "1" {
     * Mixture likelihoods are multimodal: screen a grid of starts, keep the best.
     scalar gj_best = -1e300
+    matrix bn = J(1, 7, .)
     foreach th in -30 -5 0.5 5 30 {
         foreach dl in 3.5 60 {
             foreach bt in 0.05 0.6 {
@@ -240,7 +315,11 @@ if "${GJ_multistart}" == "1" {
                 gj_startvec ${GJ_mu0} ${GJ_kappa0} `bt' `al' ${GJ_lam0} `th' `dl'
                 gj_fit "difficult iterate(60)" quiet
                 local ll = e(ll)
-                display as text "start theta=`th' del=`dl' beta=`bt':  ll = " %10.4f `ll' "  rc = " gj_rc
+                capture mata: st_matrix("bn", gj_natural(st_matrix("e(b)")))
+                display as text "start theta=`th' del=`dl' beta=`bt':  ll = " %11.4f `ll'          ///
+                    "  kappa=" %9.5f bn[1,2] "  beta=" %6.4f bn[1,3] "  alpha=" %6.4f bn[1,4]    ///
+                    "  lambda=" %6.4f bn[1,5] "  theta=" %8.4f bn[1,6] "  del=" %8.4f bn[1,7]   ///
+                    "  rc=" gj_rc
                 if !missing(`ll') & `ll' > gj_best {
                     scalar gj_best = `ll'
                     matrix bbest = e(b)
@@ -248,8 +327,13 @@ if "${GJ_multistart}" == "1" {
             }
         }
     }
-    display as text _n "Best log likelihood from screening: " %10.4f gj_best
-    if gj_best > -1e299 matrix b0 = bbest       // else fall back to the GAUSS start vector
+    display as text _n "Best log likelihood from screening: " %11.4f gj_best
+    if gj_best > -1e299 {
+        matrix b0 = bbest
+    }
+    else {
+        display as error "all screening fits failed; using the GAUSS start vector"
+    }
 }
 
 gj_fit "${GJ_maxopts}"
@@ -259,18 +343,69 @@ if gj_rc != 0 {
 }
 
 estimates store garchjump
+scalar ll_jump = e(ll)
+scalar n_jump  = e(N)
+matrix braw = e(b)                       // raw (unconstrained) estimates, kept for the bound check
+
+display as text _n "N = " n_jump ";  log likelihood = " %11.4f ll_jump "  (data units as scaled)"
+display as text "Log likelihood in raw-return units (comparable across GJ_scale): " %11.4f (ll_jump + n_jump*ln(${GJ_scale}))
+
+if ll_arch < . {
+    display as text _n "Benchmark arch GARCH(1,1) log likelihood: " %11.4f ll_arch
+    display as text   "Jump-GARCH minus GARCH:                  " %11.4f (ll_jump - ll_arch) "  (3 extra parameters: lambda, theta, del)"
+    if ll_jump < ll_arch - 1 {
+        display as error "Jump model is WORSE than its own special case: a local optimum or a bug.  Do not use these estimates."
+    }
+    display as text "(Not a chi2 test: at lambda = 0, theta and del are unidentified.)"
+}
+
+*-------------------------------------------------------------------------------
+* Self-check: recompute the log likelihood at the estimates with a plain Stata
+* loop (no Mata, no log-sum-exp) and compare with ml's value.
+*-------------------------------------------------------------------------------
+if "${GJ_selfcheck}" == "1" {
+    mata: st_matrix("bnat", gj_natural(st_matrix("braw")))
+    local cmu  = bnat[1,1]
+    local ckap = bnat[1,2]
+    local cbet = bnat[1,3]
+    local calp = bnat[1,4]
+    local clam = bnat[1,5]
+    local cth  = bnat[1,6]
+    local cdel = bnat[1,7]
+
+    quietly {
+        generate double _chk_u2 = (oilp - `cmu')^2
+        summarize _chk_u2
+        generate double _chk_h = r(mean) in 1
+        forvalues i = 2/`=_N' {
+            replace _chk_h = `ckap' + `calp'*_chk_u2[`i'-1] + `cbet'*_chk_h[`i'-1] in `i'
+        }
+        generate double _chk_d = 0
+        forvalues k = 0/$GJ_K {
+            replace _chk_d = _chk_d + (`clam'^`k'/factorial(`k')) * (_chk_h + `k'*`cdel'^2)^(-0.5) ///
+                * exp(-0.5*(oilp - `cmu' - `k'*`cth')^2/(_chk_h + `k'*`cdel'^2))
+        }
+        generate double _chk_ll = -`clam' - 0.5*ln(2*_pi) + ln(_chk_d)
+        summarize _chk_ll if t > 1
+    }
+    local llchk = r(sum)
+    display as text _n "Self-check: Mata/ml log likelihood = " %14.6f ll_jump "   plain-Stata loop = " %14.6f `llchk'
+    if abs(ll_jump - `llchk') > 1e-6*max(1, abs(ll_jump)) {
+        display as error "SELF-CHECK FAILED: the Mata likelihood and the plain-Stata recomputation disagree."
+    }
+    else display as text "Self-check passed."
+    drop _chk_*
+}
 
 *-------------------------------------------------------------------------------
 * Results on the original (GAUSS) parameter scale, delta-method SEs
 * (GAUSS: print b; print sqrt(diag(h)))
 *-------------------------------------------------------------------------------
-matrix braw = e(b)                       // raw (unconstrained) estimates, kept for the bound check
-
 local S "(2*0.0001 + (0.99 - 2*0.0001)*invlogit(_b[/apers]))"
 local W "invlogit(_b[/ashare])"
 
 local cn : colfullnames e(b)
-display as text "coefficient names: `cn'"
+display as text _n "coefficient names: `cn'"
 
 capture noisily nlcom (Mu:      _b[mu:_cons])                                            ///
       (Kappa:   exp(_b[/lnkappa]))                                  ///
@@ -282,3 +417,6 @@ capture noisily nlcom (Mu:      _b[mu:_cons])                                   
       (Persist: `S'), post
 
 mata: gj_bound_report(st_matrix("braw"))
+
+display as text _n "Units: data scaled by " ${GJ_scale} ".  To compare with estimates in other units: mu, theta, del scale by the ratio,"
+display as text "kappa by its square; beta, alpha, lambda are unit-free."
