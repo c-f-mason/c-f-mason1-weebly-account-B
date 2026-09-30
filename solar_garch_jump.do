@@ -46,9 +46,14 @@
      constraint binds, the transformed parameter runs off to +/-infinity and
      the delta-method SEs are unreliable.  A bound check is printed at the end.
    * CML's Lagrange multiplier printout has no counterpart here.
-   * GAUSS zero-weights obs 1 and rescales the others by N/(N-1); here obs 1 is
-     simply excluded (if t>1).  Point estimates are unaffected; SEs differ by a
-     factor of about sqrt((N-1)/N).
+   * GAUSS zero-weights obs 1 and rescales the others by N/(N-1); here obs 1
+     seeds the recursion and its log-likelihood contribution is set to 0 inside
+     the Mata code (lnf[1] = 0).  Point estimates are unaffected; SEs differ by a
+     factor of about sqrt((N-1)/N).  ml reports N as all rows (the seed row
+     included); the number of observations actually in the likelihood is N-1.
+     DO NOT restrict the ml sample with "if t>1": ml passes the evaluator only
+     the estimation sample, so the recursion would start at row 2 and the
+     likelihood would differ from GAUSS (this cost a 0.26 log-likelihood gap).
    * The Poisson mixture is summed in logs (log-sum-exp) for numerical
      stability.  Mathematically the same as the GAUSS expression.
    * Not yet compared with GAUSS GARCH output.  Obtain the coauthor's Model
@@ -189,6 +194,11 @@ void gj_ll(string scalar lnfvar, string scalar yvar, string rowvector pn,
     m   = rowmax(A)
     lnf = -b[5] - 0.5*ln(2*pi()) :+ m :+ ln(rowsum(exp(A :- m)))
 
+    // GAUSS: obs 1 has weight 0 (it seeds the recursion but is not in the likelihood).
+    // Done here, not with an "if t>1" sample: ml hands the evaluator ONLY the
+    // estimation sample, which would silently start the recursion at row 2.
+    lnf[1] = 0
+
     st_store(., lnfvar, lnf)
 }
 
@@ -264,8 +274,8 @@ capture program drop gj_fit
 program define gj_fit
     version 19
     args maxopts quiet
-    ml model gf0 gj_eval (mu: oilp = ) /lnkappa /apers /ashare /lamlgt /theta /lndel ///
-        if t > 1, title("GARCH(1,1) with Poisson jumps")
+    ml model gf0 gj_eval (mu: oilp = ) /lnkappa /apers /ashare /lamlgt /theta /lndel, ///
+        title("GARCH(1,1) with Poisson jumps")
     ml init b0, copy
     if "`quiet'" == "quiet" {
         capture ml maximize, `maxopts' nolog
@@ -297,7 +307,7 @@ if "${GJ_benchmark}" == "1" {
 * Estimation.  GAUSS: CML, BHHH algorithm, step halving.  Stata's gf0 evaluator
 * rejects technique(), so ml's default Newton-Raphson (numerical derivatives) is
 * used, with 'difficult' to help in flat regions.  Same optimum, different path.
-* First observation is excluded (GAUSS weight = 0) but still seeds the recursion.
+* First observation has zero weight (lnf[1] = 0 in Mata) but still seeds the recursion.
 *-------------------------------------------------------------------------------
 display as text _n "GARCH(1,1) with Jumps estimation"
 
@@ -344,10 +354,10 @@ if gj_rc != 0 {
 
 estimates store garchjump
 scalar ll_jump = e(ll)
-scalar n_jump  = e(N)
+scalar n_jump  = e(N) - 1                  // the seed row contributes nothing
 matrix braw = e(b)                       // raw (unconstrained) estimates, kept for the bound check
 
-display as text _n "N = " n_jump ";  log likelihood = " %11.4f ll_jump "  (data units as scaled)"
+display as text _n "N in the likelihood = " n_jump " (ml reports " (n_jump+1) " rows incl. the seed row);  log likelihood = " %11.4f ll_jump "  (data units as scaled)"
 display as text "Log likelihood in raw-return units (comparable across GJ_scale): " %11.4f (ll_jump + n_jump*ln(${GJ_scale}))
 
 if ll_arch < . {
