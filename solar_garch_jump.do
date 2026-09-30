@@ -411,6 +411,12 @@ if "${GJ_selfcheck}" == "1" {
     display as text "  Mata gj_ll summed over t>1        = " %14.6f `llm'  "   (N = `nllm')"
     display as text "  plain-Stata loop summed over t>1  = " %14.6f `llchk' "   (N = `nchk')"
 
+    quietly summarize _chk_lm
+    local llall = r(sum)
+    display as text "  Mata gj_ll summed over ALL rows   = " %14.6f `llall' "   (N = " r(N) ")"
+    display as text "  Mata lnf at t=1: " %12.6f _chk_lm[1] "   at t=2: " %12.6f _chk_lm[2] "   at t=N: " %12.6f _chk_lm[_N]
+    display as text "  e(ll) minus Mata sum over t>1     = " %12.6f (ll_jump - `llm')
+
     quietly {
         generate double _chk_dif = _chk_lm - _chk_ll
         count if missing(_chk_ll) & t > 1
