@@ -48,9 +48,6 @@ global GJ_droptails  0            // 1 = drop first AND last usable observations
                                   // 2 = drop first and last ROWS of the file (before missing returns are removed)
                                   // 3 = drop only the FIRST usable observation
                                   // 4 = drop only the LAST usable observation
-global GJ_dropzero   0              // 1 = drop rows with an exact zero return (robustness check)
-global GJ_droptails  0              // 1 = drop the first and last USABLE observations (after missing returns are removed)
-                                    // 2 = drop the first and last ROWS of the file (before missing returns are removed)
 global GJ_keepfirst  0              // n>0 = keep only the first n rows, as GAUSS's load solmat[n,k] does (0 = keep all)
 
 * GAUSS start values.  Model 1: mu=5, sigma=14.  Model 2: Mu Sigma Lambda Theta Del
