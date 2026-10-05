@@ -372,10 +372,13 @@ if "${GG_selfcheck}" == "1" {
 * every row in the likelihood, so expect close but not identical estimates, and
 * a different log likelihood.
 *-------------------------------------------------------------------------------
+scalar ll_arch = .
 if "${GG_benchmark}" == "1" {
-    display as text _n "Benchmark: Stata arch GARCH(1,1) (all rows)"
+    display as text _n "Benchmark: Stata arch GARCH(1,1) (all rows, NO persistence cap)"
     capture noisily arch oilp, arch(1) garch(1) nolog
     if _rc == 0 {
+        scalar ll_arch = e(ll)
+        display as text "*** The log likelihood in the table above is ARCH's, not ours.  Ours is on the SUMMARY line at the end. ***"
         matrix ba = e(b)
         display as text "arch coefficient vector (const, ARCH L1, GARCH L1, variance const):"
         matrix list ba, format(%12.6f) noheader
@@ -410,3 +413,11 @@ mata: gg_bound_report(st_matrix("braw"))
 
 display as text _n "Units: data scaled by " ${GG_scale} ".  To compare with estimates in other units: mu scales by the ratio,"
 display as text "kappa and the unconditional variance by its square; beta and alpha are unit-free."
+
+*-------------------------------------------------------------------------------
+* One unambiguous line per run: copy this when comparing runs
+*-------------------------------------------------------------------------------
+mata: st_matrix("bsum", gg_natural(st_matrix("braw")))
+display as text _n "SUMMARY | cap=" %6.4f gg_cap " | GG_fix=${GG_fix} | rc=" gg_rc                          ///
+    " | OURS: ll=" %12.5f ll_garch " beta=" %9.6f bsum[1,3] " alpha=" %9.6f bsum[1,4]                    ///
+    " sum=" %9.6f (bsum[1,3] + bsum[1,4]) " kappa=" %12.8f bsum[1,2] " | ARCH benchmark ll=" %12.5f ll_arch
