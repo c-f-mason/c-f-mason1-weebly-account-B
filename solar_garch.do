@@ -60,6 +60,10 @@ global GG_droptails  0            // 1 = drop first AND last usable observations
 global GG_dropzero   0            // 1 = drop rows with an exact zero value
 global GG_keepfirst  0            // n>0 = keep only the first n rows, as GAUSS's load solmat[n,k] does
 
+* Active-bound option.  If the bound report at the end says beta/alpha is at 0 or persistence is at the .99 cap,
+* ml cannot converge (the logistic transform only approaches a bound).  Pin the bound and estimate the rest:
+global GG_fix ""                  // "" = none;  "persist" = beta+alpha fixed at .99;  "beta0" = beta fixed at 0;  "alpha0" = alpha fixed at 0
+
 global GG_maxopts "difficult iterate(100) showtolerance"
 global GG_multistart 1            // 1 = fit from several (beta, alpha) starts and keep the best
 global GG_benchmark  1            // 1 = also fit Stata's own arch command and show it for comparison
@@ -121,9 +125,22 @@ global GG_mu0 = `mbar'                                // GAUSS start: Mu = meanc
 mata:
 mata clear
 
-real rowvector gg_natural(real rowvector r)
+// expand the free parameters to the full 4-vector when a bound is pinned (+/-40 = the bound to machine precision)
+real rowvector gg_full(real rowvector r)
 {
+    string scalar fx
+    fx = st_global("GG_fix")
+    if (cols(r) == 4 | fx == "") return(r)
+    if (fx == "persist") return( (r[1], r[2], 40, r[3]) )
+    if (fx == "beta0")   return( (r[1], r[2], r[3], -40) )
+    return( (r[1], r[2], r[3], 40) )                         // alpha0
+}
+
+real rowvector gg_natural(real rowvector r0)
+{
+    real rowvector r
     real scalar ub, kmin, s, w
+    r    = gg_full(r0)
     ub   = 0.99
     kmin = st_numscalar("gg_kmin")
     s    = ub*invlogit(r[3])
@@ -132,14 +149,12 @@ real rowvector gg_natural(real rowvector r)
 }
 
 // observation-level log likelihood (GAUSS proc garch), stored in variable lnfvar
-void gg_ll(string scalar lnfvar, string scalar yvar, string rowvector pn)
+void gg_ll(string scalar lnfvar, string scalar yvar, real rowvector r)
 {
-    real rowvector r, b
+    real rowvector b
     real colvector y, u2, h, lnf
-    real scalar    i, t, n
+    real scalar    t, n
 
-    r = J(1, 4, .)
-    for (i = 1; i <= 4; i++) r[i] = st_numscalar(pn[i])
     b = gg_natural(r)          // mu, kappa, beta, alpha
 
     y  = st_data(., yvar)      // ALL rows: ml must not subset the data
@@ -186,11 +201,15 @@ capture program drop gg_eval
 program define gg_eval
     version 19
     args todo b lnfj
+    local nfree = 4
+    if "$GG_fix" != "" local nfree = 3
     tempname p1 p2 p3 p4
-    forvalues i = 1/4 {
+    matrix gg_pv = J(1, `nfree', .)
+    forvalues i = 1/`nfree' {
         mleval `p`i'' = `b', eq(`i') scalar
+        matrix gg_pv[1, `i'] = `p`i''
     }
-    mata: gg_ll("`lnfj'", "$GG_Y", ("`p1'","`p2'","`p3'","`p4'"))
+    mata: gg_ll("`lnfj'", "$GG_Y", st_matrix("gg_pv"))
 end
 
 *-------------------------------------------------------------------------------
@@ -213,6 +232,8 @@ program define gg_startvec
     local sc = ${GG_sc}
     matrix b0 = ( `mu', ln(`kappa'*`sc'^2 - gg_kmin),     ///
                   logit(`s0'/`ub'), logit(`beta'/`s0') )
+    if "${GG_fix}" == "persist" matrix b0 = (b0[1,1], b0[1,2], b0[1,4])
+    if "${GG_fix}" == "beta0" | "${GG_fix}" == "alpha0" matrix b0 = (b0[1,1], b0[1,2], b0[1,3])
 end
 
 * One ml fit from matrix b0.  ml maximize aborts the do-file (r(430)) when it
@@ -221,8 +242,17 @@ capture program drop gg_fit
 program define gg_fit
     version 19
     args maxopts quiet
-    ml model gf0 gg_eval (mu: oilp = ) /lnkappa /apers /ashare, ///
-        title("Gaussian GARCH(1,1)")
+    if "${GG_fix}" == "" {
+        ml model gf0 gg_eval (mu: oilp = ) /lnkappa /apers /ashare, title("Gaussian GARCH(1,1)")
+    }
+    else if "${GG_fix}" == "persist" {
+        ml model gf0 gg_eval (mu: oilp = ) /lnkappa /ashare, title("Gaussian GARCH(1,1), beta+alpha pinned at .99")
+    }
+    else {
+        local fxname "beta"
+        if "${GG_fix}" == "alpha0" local fxname "alpha"
+        ml model gf0 gg_eval (mu: oilp = ) /lnkappa /apers, title("Gaussian GARCH(1,1), `fxname' pinned at 0")
+    }
     ml init b0, copy
     if "`quiet'" == "quiet" {
         capture ml maximize, `maxopts' nolog
@@ -274,7 +304,8 @@ if "${GG_multistart}" == "1" {
 gg_fit "${GG_maxopts}"
 if gg_rc != 0 {
     display as error _n "WARNING: ml did not converge (rc = " gg_rc ").  Treat the results below with suspicion;"
-    display as error "the bound report at the end shows whether a constraint is active."
+    display as error "the bound report at the end shows whether a constraint is active.  If it says beta or alpha is at 0, or"
+    display as error "beta+alpha is at .99, set GG_fix to beta0, alpha0 or persist at the top and rerun."
 }
 
 estimates store garch
@@ -308,13 +339,9 @@ if "${GG_selfcheck}" == "1" {
     }
     local llchk = r(sum)
 
-    tempname q1 q2 q3 q4
-    forvalues i = 1/4 {
-        scalar `q`i'' = braw[1,`i']
-    }
     quietly {
         generate double _chk_lm = .
-        mata: gg_ll("_chk_lm", "oilp", ("`q1'","`q2'","`q3'","`q4'"))
+        mata: gg_ll("_chk_lm", "oilp", st_matrix("braw"))
         summarize _chk_lm if t > 1
     }
     local llm = r(sum)
@@ -355,6 +382,9 @@ if "${GG_benchmark}" == "1" {
 local km = gg_kmin
 local S "(0.99*invlogit(_b[/apers]))"
 local W "invlogit(_b[/ashare])"
+if "${GG_fix}" == "persist" local S "0.99"
+if "${GG_fix}" == "beta0"   local W "0"
+if "${GG_fix}" == "alpha0"  local W "1"
 
 local cn : colfullnames e(b)
 display as text _n "coefficient names: `cn'"
