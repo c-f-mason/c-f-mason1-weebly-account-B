@@ -182,6 +182,18 @@ void gg_ll(string scalar lnfvar, string scalar yvar, real rowvector r)
     st_store(., lnfvar, lnf)
 }
 
+// Nelson (1990): GARCH(1,1) with Gaussian z is strictly stationary iff E ln(beta + alpha z^2) < 0
+real scalar gg_lyap(real scalar b, real scalar a)
+{
+    real colvector z
+    real scalar    n, L, h
+    L = 12
+    n = 24001
+    h = 2*L/(n - 1)
+    z = rangen(-L, L, n)
+    return( h*sum( normalden(z) :* ln(max((b, 1e-12)) :+ a*z:^2) ) )
+}
+
 // flag estimates sitting on (or near) a bound
 void gg_bound_report(real rowvector r)
 {
@@ -195,7 +207,9 @@ void gg_bound_report(real rowvector r)
     printf("  beta   = %14.8f%s\n", b[3], (b[3] < tol ? "   <-- at 0 bound" : ""))
     printf("  alpha  = %14.8f%s\n", b[4], (b[4] < tol ? "   <-- at 0 bound" : ""))
     printf("  beta+alpha = %10.6f%s\n", b[3] + b[4], (b[3] + b[4] > st_numscalar("gg_cap") - tol ? "   <-- at the cap (" + strofreal(st_numscalar("gg_cap")) + ")" : ""))
-    printf("  unconditional variance kappa/(1-beta-alpha) = %14.8f\n", b[2]/(1 - b[3] - b[4]))
+    if (b[3] + b[4] < 1) printf("  unconditional variance kappa/(1-beta-alpha) = %14.8f\n", b[2]/(1 - b[3] - b[4]))
+    else printf("  unconditional variance: undefined (beta+alpha >= 1)\n")
+    printf("  Nelson (1990) exponent E ln(beta+alpha z^2) = %9.5f   (> 0: not even strictly stationary)\n", gg_lyap(b[3], b[4]))
     if (b[3] < tol | b[4] < tol | b[3] + b[4] > st_numscalar("gg_cap") - tol | b[2] < st_numscalar("gg_kmin")*(1 + tol)) {
         printf("{err}  A bound is active: the Hessian-based SEs are not valid.\n")
     }
@@ -406,8 +420,7 @@ capture noisily nlcom (Mu:      _b[mu:_cons])                           ///
       (Kappa:   `km' + exp(_b[/lnkappa]))                               ///
       (Beta:    `S'*`W')                                                ///
       (Alpha:   `S'*(1 - `W'))                                          ///
-      (Persist: `S')                                                    ///
-      (UncondVar: (`km' + exp(_b[/lnkappa]))/(1 - `S')), post
+      (Persist: `S'), post
 
 mata: gg_bound_report(st_matrix("braw"))
 
@@ -418,9 +431,10 @@ display as text "kappa and the unconditional variance by its square; beta and al
 * One unambiguous line per run: copy this when comparing runs
 *-------------------------------------------------------------------------------
 mata: st_matrix("bsum", gg_natural(st_matrix("braw")))
+mata: st_numscalar("gg_lyap", gg_lyap(st_matrix("bsum")[1,3], st_matrix("bsum")[1,4]))
 display as text _n "SUMMARY | cap=" %6.4f gg_cap " | GG_fix=${GG_fix} | rc=" gg_rc                          ///
     " | OURS: ll=" %12.5f ll_garch " beta=" %9.6f bsum[1,3] " alpha=" %9.6f bsum[1,4]                    ///
-    " sum=" %9.6f (bsum[1,3] + bsum[1,4]) " kappa=" %12.8f bsum[1,2] " | ARCH benchmark ll=" %12.5f ll_arch
+    " sum=" %9.6f (bsum[1,3] + bsum[1,4]) " kappa=" %12.8f bsum[1,2] " nelson=" %8.5f gg_lyap " | ARCH benchmark ll=" %12.5f ll_arch
 
 * Append the same facts to a file, so a sequence of runs can be read off one place
 * (written next to your do-file's working directory; delete the file to start fresh).
@@ -429,7 +443,7 @@ capture {
     file open `fh' using "solar_garch_runs.txt", write append text
     file write `fh' "`c(current_date)' `c(current_time)' | cap=" %6.4f (gg_cap) " | GG_fix=${GG_fix} | rc=" (gg_rc)  ///
         " | ours ll=" %13.5f (ll_garch) " beta=" %10.7f (bsum[1,3]) " alpha=" %10.7f (bsum[1,4])                    ///
-        " sum=" %10.7f (bsum[1,3] + bsum[1,4]) " kappa=" %13.9f (bsum[1,2]) " | arch ll=" %13.5f (ll_arch)           ///
+        " sum=" %10.7f (bsum[1,3] + bsum[1,4]) " kappa=" %13.9f (bsum[1,2]) " nelson=" %9.5f (gg_lyap) " | arch ll=" %13.5f (ll_arch)           ///
         " | scale=${GG_scale} droptails=${GG_droptails} dropzero=${GG_dropzero} keepfirst=${GG_keepfirst}" _n
     file close `fh'
 }
