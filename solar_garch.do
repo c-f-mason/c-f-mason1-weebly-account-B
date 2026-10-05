@@ -421,3 +421,16 @@ mata: st_matrix("bsum", gg_natural(st_matrix("braw")))
 display as text _n "SUMMARY | cap=" %6.4f gg_cap " | GG_fix=${GG_fix} | rc=" gg_rc                          ///
     " | OURS: ll=" %12.5f ll_garch " beta=" %9.6f bsum[1,3] " alpha=" %9.6f bsum[1,4]                    ///
     " sum=" %9.6f (bsum[1,3] + bsum[1,4]) " kappa=" %12.8f bsum[1,2] " | ARCH benchmark ll=" %12.5f ll_arch
+
+* Append the same facts to a file, so a sequence of runs can be read off one place
+* (written next to your do-file's working directory; delete the file to start fresh).
+capture {
+    tempname fh
+    file open `fh' using "solar_garch_runs.txt", write append text
+    file write `fh' "`c(current_date)' `c(current_time)' | cap=" %6.4f (gg_cap) " | GG_fix=${GG_fix} | rc=" (gg_rc)  ///
+        " | ours ll=" %13.5f (ll_garch) " beta=" %10.7f (bsum[1,3]) " alpha=" %10.7f (bsum[1,4])                    ///
+        " sum=" %10.7f (bsum[1,3] + bsum[1,4]) " kappa=" %13.9f (bsum[1,2]) " | arch ll=" %13.5f (ll_arch)           ///
+        " | scale=${GG_scale} droptails=${GG_droptails} dropzero=${GG_dropzero} keepfirst=${GG_keepfirst}" _n
+    file close `fh'
+}
+display as text "Run appended to solar_garch_runs.txt in " c(pwd)
