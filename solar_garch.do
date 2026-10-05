@@ -9,7 +9,8 @@
       h_t = kappa + alpha*e_{t-1}^2 + beta*h_{t-1},      h_1 = sample mean of (y-mu)^2
 
   Parameter order and names match GAUSS: Mu Kappa Beta Alpha.
-  Constraints in GAUSS: kappa >= .0001, beta >= 0, alpha >= 0, beta+alpha <= .99.
+  Constraints in GAUSS: kappa >= .0001, beta >= 0, alpha >= 0, beta+alpha <= .99 (here the cap is the
+  setting GG_cap, default .99, so its influence can be tested).
 
   Lessons carried over from solar_garch_jump.do / solar_jump.do:
    * ml hands the evaluator ONLY the estimation sample, so the sample is NOT
@@ -28,9 +29,9 @@
   IGARCH constraint block, and the commented jump-model experiments.
 
   Differences from GAUSS/CML you should know about
-   * CML enforces the bounds and beta+alpha<=.99 directly; ml cannot, so they are
+   * CML enforces the bounds and beta+alpha<=cap directly; ml cannot, so they are
      imposed by smooth reparameterisation (see gg_natural()).  If a bound binds
-     (beta or alpha near 0, persistence near .99) the transformed parameter runs
+     (beta or alpha near 0, persistence near the cap) the transformed parameter runs
      to +/-infinity and the delta-method SEs are unreliable; a bound check is
      printed at the end.
    * GAUSS rescales the weights by N/(N-1); not replicated.  SEs differ by a
@@ -60,9 +61,14 @@ global GG_droptails  0            // 1 = drop first AND last usable observations
 global GG_dropzero   0            // 1 = drop rows with an exact zero value
 global GG_keepfirst  0            // n>0 = keep only the first n rows, as GAUSS's load solmat[n,k] does
 
-* Active-bound option.  If the bound report at the end says beta/alpha is at 0 or persistence is at the .99 cap,
+* Active-bound option.  If the bound report at the end says beta/alpha is at 0 or persistence is at the cap,
 * ml cannot converge (the logistic transform only approaches a bound).  Pin the bound and estimate the rest:
-global GG_fix ""                  // "" = none;  "persist" = beta+alpha fixed at .99;  "beta0" = beta fixed at 0;  "alpha0" = alpha fixed at 0
+global GG_fix ""                  // "" = none;  "persist" = beta+alpha fixed at the cap;  "beta0" = beta fixed at 0;  "alpha0" = alpha fixed at 0
+
+* Cap on persistence beta+alpha.  GAUSS used .99.  The cap is a modelling choice: if the estimate sits on it, the
+* result depends on it, so test .995, .999, 1 (integrated GARCH), or a large value such as 2 (effectively uncapped;
+* beta+alpha >= 1 means no finite unconditional variance).
+global GG_cap 0.99
 
 global GG_maxopts "difficult iterate(100) showtolerance"
 global GG_multistart 1            // 1 = fit from several (beta, alpha) starts and keep the best
@@ -113,6 +119,8 @@ if `nzero' > 0 {
 global GG_Y oilp
 global GG_sc = ${GG_scale}/${GG_boundscale}          // GAUSS-unit quantities are multiplied by this (variances by its square)
 scalar gg_kmin = 0.0001*(${GG_sc})^2                  // GAUSS bound kappa >= .0001, in the data's units
+if "${GG_cap}" == "" global GG_cap 0.99
+scalar gg_cap = ${GG_cap}                             // cap on beta+alpha
 global GG_mu0 = `mbar'                                // GAUSS start: Mu = meanc(y)
 
 *-------------------------------------------------------------------------------
@@ -120,7 +128,7 @@ global GG_mu0 = `mbar'                                // GAUSS start: Mu = meanc
 *-------------------------------------------------------------------------------
 * Unconstrained -> constrained:
 *   kappa = kmin + exp(r2)                   (kappa >= kmin)
-*   s = beta+alpha = .99*invlogit(r3)        (0 < s < .99)
+*   s = beta+alpha = cap*invlogit(r3)        (0 < s < cap)
 *   w = beta's share = invlogit(r4)          beta = s*w, alpha = s*(1-w)
 mata:
 mata clear
@@ -141,7 +149,7 @@ real rowvector gg_natural(real rowvector r0)
     real rowvector r
     real scalar ub, kmin, s, w
     r    = gg_full(r0)
-    ub   = 0.99
+    ub   = st_numscalar("gg_cap")
     kmin = st_numscalar("gg_kmin")
     s    = ub*invlogit(r[3])
     w    = invlogit(r[4])
@@ -186,9 +194,9 @@ void gg_bound_report(real rowvector r)
     printf("  kappa  = %14.8f%s\n", b[2], (b[2] < st_numscalar("gg_kmin")*(1 + tol) ? "   <-- at lower bound" : ""))
     printf("  beta   = %14.8f%s\n", b[3], (b[3] < tol ? "   <-- at 0 bound" : ""))
     printf("  alpha  = %14.8f%s\n", b[4], (b[4] < tol ? "   <-- at 0 bound" : ""))
-    printf("  beta+alpha = %10.6f%s\n", b[3] + b[4], (b[3] + b[4] > 0.99 - tol ? "   <-- at .99 cap" : ""))
+    printf("  beta+alpha = %10.6f%s\n", b[3] + b[4], (b[3] + b[4] > st_numscalar("gg_cap") - tol ? "   <-- at the cap (" + strofreal(st_numscalar("gg_cap")) + ")" : ""))
     printf("  unconditional variance kappa/(1-beta-alpha) = %14.8f\n", b[2]/(1 - b[3] - b[4]))
-    if (b[3] < tol | b[4] < tol | b[3] + b[4] > 0.99 - tol | b[2] < st_numscalar("gg_kmin")*(1 + tol)) {
+    if (b[3] < tol | b[4] < tol | b[3] + b[4] > st_numscalar("gg_cap") - tol | b[2] < st_numscalar("gg_kmin")*(1 + tol)) {
         printf("{err}  A bound is active: the Hessian-based SEs are not valid.\n")
     }
 }
@@ -227,11 +235,12 @@ capture program drop gg_startvec
 program define gg_startvec
     version 19
     args mu kappa beta alpha
-    local ub = 0.99
-    local s0 = `beta' + `alpha'
+    local ub = scalar(gg_cap)
+    local sum = `beta' + `alpha'
+    local s0 = min(`sum', 0.9*`ub')       // keep the start inside the cap
     local sc = ${GG_sc}
     matrix b0 = ( `mu', ln(`kappa'*`sc'^2 - gg_kmin),     ///
-                  logit(`s0'/`ub'), logit(`beta'/`s0') )
+                  logit(`s0'/`ub'), logit(`beta'/`sum') )
     if "${GG_fix}" == "persist" matrix b0 = (b0[1,1], b0[1,2], b0[1,4])
     if "${GG_fix}" == "beta0" | "${GG_fix}" == "alpha0" matrix b0 = (b0[1,1], b0[1,2], b0[1,3])
 end
@@ -246,7 +255,7 @@ program define gg_fit
         ml model gf0 gg_eval (mu: oilp = ) /lnkappa /apers /ashare, title("Gaussian GARCH(1,1)")
     }
     else if "${GG_fix}" == "persist" {
-        ml model gf0 gg_eval (mu: oilp = ) /lnkappa /ashare, title("Gaussian GARCH(1,1), beta+alpha pinned at .99")
+        ml model gf0 gg_eval (mu: oilp = ) /lnkappa /ashare, title("Gaussian GARCH(1,1), beta+alpha pinned at the cap")
     }
     else {
         local fxname "beta"
@@ -305,7 +314,7 @@ gg_fit "${GG_maxopts}"
 if gg_rc != 0 {
     display as error _n "WARNING: ml did not converge (rc = " gg_rc ").  Treat the results below with suspicion;"
     display as error "the bound report at the end shows whether a constraint is active.  If it says beta or alpha is at 0, or"
-    display as error "beta+alpha is at .99, set GG_fix to beta0, alpha0 or persist at the top and rerun."
+    display as error "beta+alpha is at the cap, set GG_fix to beta0, alpha0 or persist at the top and rerun."
 }
 
 estimates store garch
@@ -380,9 +389,10 @@ if "${GG_benchmark}" == "1" {
 * (GAUSS: print b; print sqrt(diag(h)))
 *-------------------------------------------------------------------------------
 local km = gg_kmin
-local S "(0.99*invlogit(_b[/apers]))"
+local cap = gg_cap
+local S "(`cap'*invlogit(_b[/apers]))"
 local W "invlogit(_b[/ashare])"
-if "${GG_fix}" == "persist" local S "0.99"
+if "${GG_fix}" == "persist" local S "`cap'"
 if "${GG_fix}" == "beta0"   local W "0"
 if "${GG_fix}" == "alpha0"  local W "1"
 
