@@ -72,7 +72,8 @@ global GG_cap 0.99
 
 global GG_maxopts "difficult iterate(100) showtolerance"
 global GG_multistart 1            // 1 = fit from several (beta, alpha) starts and keep the best
-global GG_benchmark  1            // 1 = also fit Stata's own arch command and show it for comparison
+global GG_benchmark  1            // 1 = also fit Stata's own arch command (Gaussian) and show it for comparison
+global GG_benchmark_t 1           // 1 = also fit arch with Student-t innovations: heavy tails WITHOUT jumps
 global GG_selfcheck  1            // 1 = recompute the log likelihood with a plain Stata loop and compare
 
 * GAUSS start values: Mu = sample mean | Kappa = .5 | Beta = .1 | Alpha = .1   (kappa in GG_boundscale units)
@@ -192,6 +193,20 @@ real scalar gg_lyap(real scalar b, real scalar a)
     h = 2*L/(n - 1)
     z = rangen(-L, L, n)
     return( h*sum( normalden(z) :* ln(max((b, 1e-12)) :+ a*z:^2) ) )
+}
+
+// same exponent when z is a Student-t with nu df, scaled to unit variance (nu > 2)
+real scalar gg_lyap_t(real scalar b, real scalar a, real scalar nu)
+{
+    real colvector z
+    real scalar    n, L, h, c
+    if (missing(nu) | nu <= 2) return(.)
+    L = 300
+    n = 300001
+    h = 2*L/(n - 1)
+    c = sqrt(nu/(nu - 2))
+    z = rangen(-L, L, n)
+    return( h*sum( c*tden(nu, c*z) :* ln(max((b, 1e-12)) :+ a*z:^2) ) )
 }
 
 // flag estimates sitting on (or near) a bound
@@ -386,7 +401,12 @@ if "${GG_selfcheck}" == "1" {
 * every row in the likelihood, so expect close but not identical estimates, and
 * a different log likelihood.
 *-------------------------------------------------------------------------------
-scalar ll_arch = .
+scalar ll_arch  = .
+scalar ll_archt = .
+scalar df_archt = .
+scalar a_archt  = .
+scalar b_archt  = .
+scalar lyap_t   = .
 if "${GG_benchmark}" == "1" {
     display as text _n "Benchmark: Stata arch GARCH(1,1) (all rows, NO persistence cap)"
     capture noisily arch oilp, arch(1) garch(1) nolog
@@ -398,8 +418,42 @@ if "${GG_benchmark}" == "1" {
         matrix list ba, format(%12.6f) noheader
         display as text "(ours: mu, then below kappa/beta/alpha; arch's ARCH term = our alpha, its GARCH term = our beta, its variance constant = our kappa)"
     }
-    estimates restore garch
 }
+
+*-------------------------------------------------------------------------------
+* Benchmark: GARCH(1,1) with Student-t innovations (arch, distribution(t)).
+* Heavy tails WITHOUT jumps.  If persistence falls below 1 here too, fat-tailed
+* errors alone remove the explosive behaviour and the jump model must be
+* justified against this alternative, not only against the Gaussian GARCH.
+*-------------------------------------------------------------------------------
+if "${GG_benchmark_t}" == "1" {
+    display as text _n "Benchmark: Stata arch GARCH(1,1) with Student-t innovations (all rows, NO persistence cap)"
+    capture noisily arch oilp, arch(1) garch(1) distribution(t) nolog
+    if _rc == 0 {
+        scalar ll_archt = e(ll)
+        matrix bt = e(b)
+        local cnt : colfullnames bt
+        display as text "arch(t) coefficient names: `cnt'"
+        scalar a_archt = bt[1,2]               // ARCH term  (assumed layout: mean const, ARCH, GARCH, variance const, shape)
+        scalar b_archt = bt[1,3]               // GARCH term
+        capture scalar df_archt = e(tdf)
+        if df_archt == . {
+            display as text "(could not read the t degrees of freedom from e(tdf): read it from the table above)"
+        }
+        mata: st_numscalar("lyap_t", gg_lyap_t(st_numscalar("b_archt"), st_numscalar("a_archt"), st_numscalar("df_archt")))
+        display as text _n "GARCH-t: ll = " %12.5f ll_archt "   df = " %9.4f df_archt
+        display as text "         alpha = " %9.6f a_archt "   beta = " %9.6f b_archt "   alpha+beta = " %9.6f (a_archt + b_archt)
+        display as text "         Nelson exponent with t innovations = " %9.5f lyap_t "   (> 0: not strictly stationary)"
+        if (a_archt + b_archt) < 1 & ll_archt < . {
+            display as text "         Persistence is below 1 with t errors: heavy tails alone remove the explosive behaviour."
+        }
+        else if ll_archt < . {
+            display as text "         Persistence is still >= 1 with t errors: heavy tails alone do not remove it."
+        }
+        display as text "(Check the coefficient names above: the positions of ARCH and GARCH terms are assumed from arch's usual layout.)"
+    }
+}
+estimates restore garch
 
 *-------------------------------------------------------------------------------
 * Results on the original (GAUSS) parameter scale, delta-method SEs
@@ -432,6 +486,8 @@ display as text "kappa and the unconditional variance by its square; beta and al
 *-------------------------------------------------------------------------------
 mata: st_matrix("bsum", gg_natural(st_matrix("braw")))
 mata: st_numscalar("gg_lyap", gg_lyap(st_matrix("bsum")[1,3], st_matrix("bsum")[1,4]))
+display as text _n "SUMMARY-T | arch with Student-t: ll=" %12.5f ll_archt " df=" %9.4f df_archt " alpha=" %9.6f a_archt        ///
+    " beta=" %9.6f b_archt " sum=" %9.6f (a_archt + b_archt) " nelson=" %9.5f lyap_t
 display as text _n "SUMMARY | cap=" %6.4f gg_cap " | GG_fix=${GG_fix} | rc=" gg_rc                          ///
     " | OURS: ll=" %12.5f ll_garch " beta=" %9.6f bsum[1,3] " alpha=" %9.6f bsum[1,4]                    ///
     " sum=" %9.6f (bsum[1,3] + bsum[1,4]) " kappa=" %12.8f bsum[1,2] " nelson=" %8.5f gg_lyap " | ARCH benchmark ll=" %12.5f ll_arch
@@ -444,6 +500,7 @@ capture {
     file write `fh' "`c(current_date)' `c(current_time)' | cap=" %6.4f (gg_cap) " | GG_fix=${GG_fix} | rc=" (gg_rc)  ///
         " | ours ll=" %13.5f (ll_garch) " beta=" %10.7f (bsum[1,3]) " alpha=" %10.7f (bsum[1,4])                    ///
         " sum=" %10.7f (bsum[1,3] + bsum[1,4]) " kappa=" %13.9f (bsum[1,2]) " nelson=" %9.5f (gg_lyap) " | arch ll=" %13.5f (ll_arch)           ///
+        " | archT ll=" %13.5f (ll_archt) " df=" %9.4f (df_archt) " alpha=" %9.6f (a_archt) " beta=" %9.6f (b_archt) " nelsonT=" %9.5f (lyap_t) ///
         " | scale=${GG_scale} droptails=${GG_droptails} dropzero=${GG_dropzero} keepfirst=${GG_keepfirst}" _n
     file close `fh'
 }
