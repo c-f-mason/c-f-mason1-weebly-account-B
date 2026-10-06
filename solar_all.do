@@ -373,6 +373,18 @@ end
 *===============================================================================
 * PROGRAMS (all defined here, at the top level, before any model is run)
 *===============================================================================
+
+* e-class helper: adds each model's log likelihood, N and parameter count to the stored estimates
+* (ereturn may only be used inside an e-class program).  If this ever fails the table still works,
+* just without those three scalars (capture in front of each call).
+capture program drop sc_addinfo
+program define sc_addinfo, eclass
+    version 19
+    args ll n k
+    ereturn scalar ll_ours = `ll'
+    ereturn scalar N_ll    = `n'
+    ereturn scalar k_par   = `k'
+end
 capture program drop jd_gbm_lf
 program define jd_gbm_lf
     version 19
@@ -561,9 +573,7 @@ else display as text "ml matches the closed form."
 * natural-scale estimates (delta-method SEs), ready for a table
 estimates restore raw_gbm
 capture noisily nlcom (Mu: _b[mu:_cons]) (Sigma: exp(_b[/lnsigma])), post
-ereturn scalar ll_ours = ll_gbm
-ereturn scalar N_ll    = n_gbm
-ereturn scalar k_par   = k_gbm
+capture sc_addinfo ll_gbm n_gbm k_gbm
 * >>>>>>>>>> ESTIMATES STORE (placeholder 1 of 7): geometric Brownian motion <<<<<<<<<<
 estimates store gbm
 
@@ -636,9 +646,7 @@ display as text "  del    = " %12.5f `gdel' cond(`gdel'/${JD_sc} > 100, "   <-- 
 estimates restore raw_jd
 capture noisily nlcom (Mu: _b[mu:_cons]) (Sigma: exp(_b[/lnsigma]))       ///
     (Lambda: invlogit(_b[/lamlgt])) (Theta: _b[/theta]) (Del: exp(_b[/lndel])), post
-ereturn scalar ll_ours = ll_jd
-ereturn scalar N_ll    = n_jd
-ereturn scalar k_par   = k_jd
+capture sc_addinfo ll_jd n_jd k_jd
 * >>>>>>>>>> ESTIMATES STORE (placeholder 2 of 7): jump-diffusion, no GARCH <<<<<<<<<<
 estimates store jd
 
@@ -825,9 +833,7 @@ capture noisily nlcom (Mu:      _b[mu:_cons])                           ///
       (Beta:    `S'*`W')                                                ///
       (Alpha:   `S'*(1 - `W'))                                          ///
       (Persist: `S'), post
-ereturn scalar ll_ours = ll_garch
-ereturn scalar N_ll    = n_garch
-ereturn scalar k_par   = k_garch
+capture sc_addinfo ll_garch n_garch k_garch
 * >>>>>>>>>> ESTIMATES STORE (placeholder 5 of 7): Gaussian GARCH(1,1), our GAUSS-faithful likelihood <<<<<<<<<<
 estimates store garch
 
@@ -896,9 +902,7 @@ if "${SC_run_gg}" == "1" & "${GG_extra_uncapped}" == "1" {
           (Beta:    `S'*`W')                                                ///
           (Alpha:   `S'*(1 - `W'))                                          ///
           (Persist: `S'), post
-    ereturn scalar ll_ours = ll_garch_u
-    ereturn scalar N_ll    = n_garch_u
-    ereturn scalar k_par   = k_garch_u
+    capture sc_addinfo ll_garch_u n_garch_u k_garch_u
     * >>>>>>>>>> ESTIMATES STORE (placeholder 6 of 7): Gaussian GARCH(1,1), cap removed <<<<<<<<<<
     estimates store garch_u
 
@@ -1093,9 +1097,7 @@ capture noisily nlcom (Mu:      _b[mu:_cons])                                   
       (Theta:   _b[/theta])                                         ///
       (Del:     0.0001 + exp(_b[/lndel]))                           ///
       (Persist: `S'), post
-ereturn scalar ll_ours = ll_jump
-ereturn scalar N_ll    = n_jump
-ereturn scalar k_par   = k_jump
+capture sc_addinfo ll_jump n_jump k_jump
 * >>>>>>>>>> ESTIMATES STORE (placeholder 7 of 7): GARCH(1,1) with Poisson jumps <<<<<<<<<<
 estimates store garchjump
 
